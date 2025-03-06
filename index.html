@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapbox Video Renderer</title>
+    <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.10.0"></script>
+    <script src="https://unpkg.com/mapbox-gl/dist/mapbox-gl.js"></script>
+    <script src="https://unpkg.com/three@latest/build/three.min.js"></script>
+    <script src="https://unpkg.com/@turf/turf"></script>
+    <link href="https://unpkg.com/mapbox-gl/dist/mapbox-gl.css" rel="stylesheet">
+    <style>
+        body, html { margin: 0; padding: 0; overflow: hidden; }
+        #map { width: 640px; height: 360px; }
+        #download { margin: 10px; padding: 10px; background: #0078A8; color: white; border: none; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <button id="download">Start Recording</button>
+    <div id="map"></div>
+
+    <script>
+        mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN'; // Hier deinen API Key einfügen!
+
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/satellite-v9',
+            center: [13.405, 52.52], // Berlin als Beispiel
+            zoom: 14,
+            pitch: 60
+        });
+
+        const route = turf.lineString([
+            [13.403, 52.52], [13.404, 52.521], [13.405, 52.522], [13.406, 52.523]
+        ]);
+
+        let carModel, scene, renderer, camera;
+        const init3DModel = () => {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, 640 / 360, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ alpha: true });
+            renderer.setSize(640, 360);
+            
+            const loader = new THREE.GLTFLoader();
+            loader.load('car_model.glb', (gltf) => {
+                carModel = gltf.scene;
+                scene.add(carModel);
+            });
+        };
+
+        const render3DModel = (time) => {
+            const progress = (time / 10000) % 1; // Animation läuft 10 Sekunden
+            const pos = turf.along(route, progress * 100, { units: 'meters' }).geometry.coordinates;
+            if (carModel) {
+                carModel.position.set(pos[0], pos[1], 0);
+                renderer.render(scene, camera);
+            }
+            requestAnimationFrame(render3DModel);
+        };
+
+        map.on('load', () => {
+            map.addSource('route', { type: 'geojson', data: route });
+            map.addLayer({
+                id: 'route-line',
+                type: 'line',
+                source: 'route',
+                paint: { 'line-color': '#FF0000', 'line-width': 3 }
+            });
+
+            init3DModel();
+            render3DModel(0);
+        });
+
+        let mediaRecorder, chunks = [];
+        document.getElementById('download').addEventListener('click', async () => {
+            const stream = map.getCanvas().captureStream(25);
+            mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm; codecs=vp9' });
+
+            mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+            mediaRecorder.onstop = async () => {
+                const webmBlob = new Blob(chunks, { type: 'video/webm' });
+                await convertToMp4(webmBlob);
+            };
+
+            mediaRecorder.start();
+            setTimeout(() => mediaRecorder.stop(), 10000); // 10 Sekunden Aufnahme
+        });
+
+        async function convertToMp4(webmBlob) {
+            const { createFFmpeg, fetchFile } = FFmpeg;
+            const ffmpeg = createFFmpeg({ log: true });
+            await ffmpeg.load();
+
+            ffmpeg.FS('writeFile', 'input.webm', await fetchFile(webmBlob));
+            await ffmpeg.run('-i', 'input.webm', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '23', 'output.mp4');
+
+            const mp4Data = ffmpeg.FS('readFile', 'output.mp4');
+            const mp4Blob = new Blob([mp4Data.buffer], { type: 'video/mp4' });
+            const url = URL.createObjectURL(mp4Blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'animation.mp4';
+            a.click();
+        }
+    </script>
+</body>
+</html>
